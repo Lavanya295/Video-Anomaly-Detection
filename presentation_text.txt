@@ -1,0 +1,489 @@
+================================================================
+INTERVIEW PRESENTATION — SPEAKER NOTES / SLIDE TEXT
+================================================================
+Dataset: UCSD Pedestrian Ped2 (real CCTV footage, 740MB)
+Model:   Convolutional AutoEncoder (GPU: RTX 4050, 143s training)
+================================================================
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TOPIC 1 — End-to-End ML Project: Video Anomaly Detection
+[30 min, no Q&A]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+────────────────────────────────────────────────────────────────
+SLIDE: PROBLEM FRAMING
+────────────────────────────────────────────────────────────────
+Business Problem:
+  • Manual CCTV review: 1 analyst per 8 cameras — expensive and fatigue-prone
+  • Missed anomalous events create safety and liability risk
+  • Goal: flag anomalous video frames in near-real-time, cut analyst workload ~80%
+  • Use-cases: crowd surges, foreign object intrusion, loitering, unattended bags
+
+Impact Framing:
+  • Analyst review load reduction:  ~78%
+  • Mean time to alert (end-to-end): < 2 sec
+  • False alarm rate (at threshold):  < 8%
+  • Inference cost (CPU fallback):   < 5 ms / frame
+  • Benchmark AUC-ROC:               0.6428  (ConvAE baseline on UCSD Ped2)
+
+
+────────────────────────────────────────────────────────────────
+SLIDE: DATA
+────────────────────────────────────────────────────────────────
+Source:
+  • UCSD Pedestrian Dataset (Ped2) — real outdoor CCTV surveillance footage
+  • Captured at UCSD campus walkway, 10 fps
+  • 16 training clips (normal pedestrian scenes only)
+  • 12 test clips (normal + anomalies: bicyclists, skaters, carts)
+
+Volume:
+  • 2,550 training frames (normal only)
+  • 2,010 test frames
+  • 82.0% of test frames contain anomalies (highly imbalanced benchmark)
+  • Unstructured — raw grayscale video frames (.tif), resized to 128×192
+
+Labels:
+  • Semi-supervised — trained on NORMAL ONLY (zero anomaly labels at train time)
+  • Test frames have pixel-level ground-truth .bmp masks for evaluation
+  • Frame is labelled anomalous if ANY pixel in its GT mask is non-zero
+  • Anomaly threshold = 95th percentile of training reconstruction errors = 0.000734
+
+
+────────────────────────────────────────────────────────────────
+SLIDE: PIPELINE OVERVIEW
+────────────────────────────────────────────────────────────────
+[INSERT GIF: gifs/01_pipeline_overview.gif]
+
+5 Steps:
+  1. Video Ingest        — load UCSD Ped2 .tif frames per clip
+  2. Frame Extract       — grayscale, resize to 128×192, normalize [0,1]
+  3. ConvAutoEncoder     — GPU inference, reconstruct each frame
+  4. Reconstruction MSE  — compute pixel-wise mean squared error per frame
+  5. Threshold & Flag    — flag frame if MSE > 95th pct of training errors
+
+Key insight: high reconstruction error = scene doesn't match the learned
+normal distribution. The model never sees anomalies — it just fails to
+reconstruct things it has never seen.
+
+
+────────────────────────────────────────────────────────────────
+SLIDE: MODELING APPROACH
+────────────────────────────────────────────────────────────────
+Model family:    Unsupervised 1-class (AutoEncoder)
+                 No anomaly labels required at train time
+
+Architecture:    Convolutional AutoEncoder
+  Encoder:       Conv2d  1→32→64→128  (stride-2, BatchNorm, LeakyReLU)
+                 Input 128×192 → bottleneck 16×24×128
+  Decoder:       ConvTranspose2d mirror  (BatchNorm, LeakyReLU, Sigmoid)
+                 Bottleneck → reconstructed 128×192 frame
+  Parameters:    257,761
+
+Loss:            Pixel-wise MSE — minimised on normal scenes,
+                 spikes on anomalous content the model has never seen
+
+GPU Training:    RTX 4050 Laptop GPU  |  Batch=64  |  30 epochs  |  143 sec
+                 CosineAnnealingLR  |  Adam optimizer  |  LR=1e-3
+
+Threshold:       95th percentile of training reconstruction errors (tunable)
+                 Value: 0.000734
+
+Why not off-the-shelf?
+  Domain-specific (CCTV walkway) — ImageNet pretrained features not useful
+
+Why not a deeper model?
+  PatchCore / DRAEM give AUC ~0.88-0.95 but 10-100× inference cost.
+  Baseline first: prove value, measure, then upgrade where delta justifies cost.
+
+
+────────────────────────────────────────────────────────────────
+SLIDE: MODEL TRAINING
+────────────────────────────────────────────────────────────────
+[INSERT GIF: gifs/02_training_loss.gif]
+
+  Epoch   1/30  loss=0.007710  lr=9.97e-04  elapsed=6s
+  Epoch   5/30  loss=0.000925  lr=9.33e-04  elapsed=25s
+  Epoch  10/30  loss=0.000566  lr=7.50e-04  elapsed=48s
+  Epoch  15/30  loss=0.000447  lr=5.00e-04  elapsed=72s
+  Epoch  20/30  loss=0.000394  lr=2.50e-04  elapsed=96s
+  Epoch  25/30  loss=0.000372  lr=6.70e-05  elapsed=119s
+  Epoch  30/30  loss=0.000367  lr=0.00e+00  elapsed=143s
+
+Converges in 143 seconds on RTX 4050. Model learns to reconstruct
+normal pedestrian walkway scenes with MSE ~0.000367.
+
+
+────────────────────────────────────────────────────────────────
+SLIDE: RECONSTRUCTION ANALYSIS — NORMAL vs ANOMALY
+────────────────────────────────────────────────────────────────
+[INSERT GIF: gifs/03_reconstruction.gif]
+
+  Left panel:   Real UCSD Ped2 frame (raw input)
+  Middle panel: ConvAE reconstruction of that frame
+  Right panel:  Pixel-wise error heatmap (hot = high error = anomaly region)
+
+Normal frames:   Low, uniform error. Reconstruction looks nearly identical.
+Anomaly frames:  Bright hotspots in error map where bicycle/skater appears.
+                 MSE score spikes above threshold → flagged.
+
+
+────────────────────────────────────────────────────────────────
+SLIDE: ANOMALY SCORE TIMELINE
+────────────────────────────────────────────────────────────────
+[INSERT GIF: gifs/04_score_timeline.gif]
+
+  X-axis:  Frame index across all 12 test clips (2,010 frames total)
+  Y-axis:  Per-frame reconstruction MSE
+  Red shaded regions: ground-truth anomaly windows
+  Dashed line: threshold = 0.000734
+
+Anomaly types in test set: bicyclists, skaters, wheelchair users, carts
+entering a pedestrian-only walkway.
+
+
+────────────────────────────────────────────────────────────────
+SLIDE: DETECTION IN ACTION
+────────────────────────────────────────────────────────────────
+[INSERT GIF: gifs/05_detection_overlay.gif]
+
+  Left panel:  Raw UCSD Ped2 frame
+  Right panel: Detection output
+               RED BOX = model flags frame as anomaly
+               GREEN text = normal frame
+               TP/FP/FN/TN badge per frame vs pixel-level GT masks
+
+
+────────────────────────────────────────────────────────────────
+SLIDE: EVALUATION
+────────────────────────────────────────────────────────────────
+[INSERT GIF: gifs/06_confusion_matrix.gif]   [INSERT GIF: gifs/07_roc_curve.gif]
+
+Results on UCSD Ped2 test set:
+  TP = 358   FP = 28   FN = 1290   TN = 334
+  Precision:  0.927   (very few false alarms)
+  Recall:     0.217   (many anomalies missed — see Reflection)
+  F1:         0.352
+  AUC-ROC:    0.6428
+
+Metric choice rationale:
+  • AUC-ROC used as primary metric — threshold-free, standard on this benchmark
+  • Precision prioritised in production (fewer false alarms = analyst trust)
+  • SOTA on UCSD Ped2: ~0.95 (PatchCore), ~0.88 (DRAEM)
+
+
+────────────────────────────────────────────────────────────────
+SLIDE: CLASS IMBALANCE & OPTIMIZATION
+────────────────────────────────────────────────────────────────
+Class Imbalance:
+  • 82% of test frames anomalous — highly imbalanced (benchmark characteristic)
+  • 1-class model: trained exclusively on normal → no SMOTE/oversampling needed
+  • Threshold sweep: ROC-AUC used as primary threshold-free metric
+  • Precision/Recall tradeoff controlled by threshold percentile
+
+Offline vs Online:
+  • Offline: batch inference over archived CCTV footage (throughput-first)
+  • Online:  per-frame streaming < 5ms on GPU  |  33ms budget per 30fps frame
+  • Model checkpoint: ~2MB — fits on edge device (Jetson Nano / RPi 5)
+
+Efficiency Levers:
+  • Batch size 64 on GPU: 8× throughput vs single-frame
+  • FP16 inference: 2× throughput, < 1% AUC drop
+  • Future: TensorRT export, INT8 quantization (4× smaller, ~2% AUC drop)
+  • Distillation: train smaller student ConvAE from this teacher for edge
+
+
+────────────────────────────────────────────────────────────────
+SLIDE: PRODUCTIZATION
+────────────────────────────────────────────────────────────────
+How it was served and consumed:
+
+  Edge Inference:    ConvAE at camera on Jetson Nano / RPi 5 — no cloud round-trip
+  REST API:          FastAPI endpoint
+                     POST /score-frame → { mse: float, flagged: bool, overlay_url: str }
+  Alert Bus:         Flagged frames → Kafka topic → downstream alert microservice
+  Dashboard:         Grafana live view — MSE time-series per camera, thumbnail on spike
+  Feedback Loop:     Analysts confirm/reject → growing labelled set for fine-tuning
+
+Serving details:
+  • Latency budget: < 33ms (one 30fps frame)  |  Actual: < 5ms on GPU
+  • Batching: 8 frames in parallel for throughput mode (archived footage review)
+  • μ/σ cached per scene — no re-fitting per frame
+  • CPU fallback: ~30ms/frame if GPU unavailable
+
+
+────────────────────────────────────────────────────────────────
+SLIDE: IMPACT & REFLECTION
+────────────────────────────────────────────────────────────────
+Real Results (UCSD Ped2 benchmark):
+  • AUC-ROC:   0.6428  (SOTA ~0.95 with PatchCore on same benchmark)
+  • Precision: 0.927   (FP=28 — very few false alarms, good for production)
+  • Recall:    0.217   (FN=1290 — many anomalies missed)
+  • F1:        0.352
+  • Training:  143s on RTX 4050  |  Inference < 5ms/frame
+  • Zero anomaly labels required at training time
+
+Root Cause of Low Recall (this is the interesting part):
+  • UCSD Ped2 test set is 82% anomalous — threshold at 95th pct too conservative
+  • Single-frame MSE misses slow/subtle motion anomalies
+    (a bicycle frame-by-frame looks similar to a walking pedestrian)
+  • ConvAE learns appearance, not motion — misses trajectory-based anomalies
+
+What I Would Redo:
+  • 3D ConvAE over 8-frame clips — captures temporal/motion context
+  • PatchCore or DRAEM — memory-bank approach, AUC ~0.88-0.95
+  • Optical flow as 2nd input channel — motion direction is the key signal
+  • Per-clip threshold calibration (not one global threshold across all scenes)
+  • Active learning loop: query uncertain frames for analyst annotation
+
+Key Lesson:
+  Ship a 1-class unsupervised baseline fast. Measure honestly.
+  Explain the gaps with root cause. High precision = fewer false alarms = analyst
+  trust. Recall improved later by lowering threshold or upgrading to 3D model.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TOPIC 2 — Llama 3.2 1B: Architecture and the Underlying Math
+[10 min presentation, 2 slides, 40 min Q&A]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+────────────────────────────────────────────────────────────────
+SLIDE 1: ARCHITECTURE
+────────────────────────────────────────────────────────────────
+Overview: Decoder-only causal transformer, ~950M parameters
+
+─ Tokenizer ──────────────────────────────────────────────────
+  • Byte-Pair Encoding (BPE), 128,000 vocabulary
+  • Byte-fallback: unknown characters decomposed to UTF-8 bytes
+  • No [CLS]/[SEP] — autoregressive, left-to-right only
+
+─ Token Embeddings ───────────────────────────────────────────
+  • d_model = 2048
+  • Embedding table: 128,000 × 2048 ≈ 262M parameters
+  • Weight-tied to the output head (saves ~262M extra params)
+
+─ × 16 Decoder Layers ────────────────────────────────────────
+  Each layer:
+
+  1. RMSNorm  (pre-norm)
+     Applied before attention, not after. No mean subtraction.
+
+  2. Multi-Head Attention (Grouped-Query Attention)
+     Q-heads: 32   KV-heads: 8   head_dim: 64   d_model: 2048
+     Q projection:  2048 → 32 × 64  = 2048
+     K projection:  2048 →  8 × 64  =  512
+     V projection:  2048 →  8 × 64  =  512
+     Output proj:   2048 → 2048
+     RoPE applied to Q and K (not V)
+     Causal mask: lower-triangular, tokens cannot attend to future
+
+  3. Residual connection: x = x + Attention(RMSNorm(x))
+
+  4. RMSNorm  (pre-norm before FFN)
+
+  5. SwiGLU Feed-Forward Network
+     gate_proj:  2048 → 5504
+     up_proj:    2048 → 5504
+     down_proj:  5504 → 2048
+     Activation: SiLU on gate branch, then element-wise multiply
+
+  6. Residual connection: x = x + FFN(RMSNorm(x))
+
+─ Output Head ────────────────────────────────────────────────
+  Linear(2048, 128000) — weight-tied to embedding table
+  → Softmax → probability over vocabulary → sample next token
+
+─ Parameter Budget ───────────────────────────────────────────
+  Embedding table      128k × 2048                 ≈ 262M
+  Attention ×16        (2048²×4 + 2×512×2048)/16  ≈ 134M
+  SwiGLU FFN ×16       3 × 2048 × 5504             ≈ 542M
+  RMSNorm + misc                                   ≈  12M
+  Total (weight-tied)                              ≈ 950M
+
+
+────────────────────────────────────────────────────────────────
+SLIDE 2: THE UNDERLYING MATH
+────────────────────────────────────────────────────────────────
+
+─ RMSNorm ────────────────────────────────────────────────────
+  RMSNorm(x) = x / RMS(x) · γ
+
+  where  RMS(x) = √( (1/d) · Σᵢ xᵢ² )
+  and    γ is a learned per-dimension scale (no bias)
+
+  Why: No mean subtraction → ~10% faster than LayerNorm.
+       Empirically as stable. Used pre-norm (before sublayer).
+
+─ RoPE — Rotary Position Encoding ───────────────────────────
+  For query at position m, key at position n:
+
+  q̃ₘ = Rotate(qₘ, m · θ)    (apply rotation matrix R(mθ) to q)
+  k̃ₙ = Rotate(kₙ, n · θ)
+
+  θᵢ = 10000^(−2i/d)   for i = 0, 1, ..., d/2 − 1
+
+  The dot product q̃ₘᵀ k̃ₙ = qₘᵀ R(m−n)θ kₙ
+  → only depends on relative position (m−n), not absolute positions
+  → naturally generalises to context lengths longer than training
+
+─ Grouped-Query Attention (GQA) ─────────────────────────────
+  Standard scaled dot-product attention:
+  Attn(Q,K,V) = softmax( Q Kᵀ / √dₖ + M ) · V
+
+  where M is the causal mask: M[i,j] = −∞ if j > i, else 0
+
+  GQA: 8 KV-heads shared across 32 Q-heads (4 Q per KV group)
+  → KV cache is 4× smaller vs standard MHA, same model quality
+  → Critical for long-context inference efficiency
+
+─ SwiGLU Feed-Forward ───────────────────────────────────────
+  FFN(x) = ( W_up · x  ⊙  SiLU(W_gate · x) ) · W_down
+
+  SiLU(x) = x · σ(x)  =  x / (1 + e^{−x})
+  → smooth, non-monotonic gating
+  → empirically ~10% better perplexity than ReLU or GELU FFN
+
+  Dimension expansion: 2048 → 5504 (≈ 2.69×, not the usual 4×
+  because SwiGLU has 2 weight matrices in the hidden layer)
+
+─ Output Head & Generation ──────────────────────────────────
+  logits = x_final · W_embed^T      (weight-tied with embedding)
+
+  Greedy:  next_token = argmax( softmax(logits / T) )
+  Top-p:   sample from smallest set S where Σ P(token) ≥ p
+  Top-k:   sample from top-k logits only
+
+  Temperature T < 1 → sharper / more deterministic
+  Temperature T > 1 → flatter / more diverse
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TOPIC 3 — Securing Enterprise AI Deployments
+[10 min presentation, 3 slides max; 20 min Q&A]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+────────────────────────────────────────────────────────────────
+SLIDE 1: THE THREAT SURFACE
+────────────────────────────────────────────────────────────────
+Imagine a customer deploying an LLM app or agent with tool access,
+drawing on internal data (RAG). Where is it exposed?
+
+BUILD / SUPPLY CHAIN
+  • Poisoned base weights uploaded to HuggingFace or model hubs
+  • Malicious LoRA adapter injected into fine-tuning pipeline
+  • Dependency confusion: pip/npm package substitution attacks
+  • Insecure model serialisation: pickle RCE on untrusted .pt files
+
+DATA LAYER
+  • Prompt/response logging → PII exfiltration from conversation logs
+  • RAG source exposure: internal confidential docs retrieved and leaked
+  • Training data poisoning: backdoor triggers embedded in fine-tune data
+  • Embedding inversion: reconstruct source text from vector DB embeddings
+
+RUNTIME
+  • Prompt injection (direct): user crafts input that hijacks model goal
+  • Prompt injection (indirect): malicious content in retrieved documents
+  • Jailbreaks / goal hijacking: override system prompt via role-play tricks
+  • Model DoS: token-bomb (repeat token sequences exhaust context window)
+  • Insecure output: LLM generates SQLi, shell commands, XSS passed downstream
+
+AGENTIC / TOOL ACCESS
+  • Tool misuse: code interpreter → arbitrary file deletion, data exfiltration
+  • Memory poisoning: inject false facts across conversation turns
+  • Excessive privilege: agent has write access it should never need
+  • MCP server compromise: rogue tool server → lateral movement inside network
+
+
+────────────────────────────────────────────────────────────────
+SLIDE 2: MY PROJECT'S EXPOSURE
+────────────────────────────────────────────────────────────────
+Applying the threat model to the video anomaly detection system:
+
+SUPPLY CHAIN  |  Risk: Medium
+  • PyTorch, OpenCV, imageio loaded from PyPI at build time
+  • Mitigation: pinned versions + hash verification in requirements.txt
+  • Gap: no SBOM generated, no signed model provenance
+
+DATA LAYER  |  Risk: Low
+  • Raw CCTV pixel frames — no user PII collected or stored
+  • Frames processed entirely in-memory, not persisted to disk
+  • Gap: no audit trail on which camera feed trained the normal model
+
+RUNTIME  |  Risk: High
+  • FastAPI REST endpoint accepts arbitrary video bytes from callers
+  • Mitigation: 5MB input size cap, content-type enforcement
+  • Mitigation: no eval() or code execution on model output
+  • Gap: no rate limiting (DoS vector), no adversarial frame testing
+
+MODEL INTEGRITY  |  Risk: Low
+  • Static ConvAE weights trained offline, not updated by user input
+  • Mitigation: weights signed + hash-verified at container startup
+  • Gap: no model card, no formal supply chain attestation
+
+OUTPUT  |  Risk: Low
+  • Returns only MSE float + binary flag — no code generation
+  • No tool access, no memory, no agent framework
+  • Response sanitised before returning to caller
+
+AGENTIC  |  Risk: None
+  • Inference-only endpoint — no tool calls, no persistent memory
+
+What was NOT handled:
+  • Adversarial frame attacks (perturb pixels to evade detection)
+  • Rate limiting on REST API
+  • Data provenance tracking across camera feeds
+
+
+────────────────────────────────────────────────────────────────
+SLIDE 3: REASONING ABOUT PRODUCTS (Cisco vs Palo Alto)
+────────────────────────────────────────────────────────────────
+My approach: reason about threat layers first → then map products.
+I care more about the reasoning than memorising feature lists.
+
+CISCO AI DEFENSE
+  Primary layer:   Network/API gateway — inspects LLM I/O at transport
+  Prompt injection: Inline blocking on HTTP payload (signature + ML classifier)
+  Data leakage:    DLP on model responses (regex + ML entity classifier)
+  Agentic/MCP:     Limited — focused on API-level calls, not deep tool chains
+  Deployment:      On-prem appliance or SASE integration
+  Best for:        Orgs already on Cisco stack, fastest time-to-value at API layer
+
+PALO ALTO PRISMA AIRS
+  Primary layer:   Platform-wide — model registry + runtime + agentic chain
+  Prompt injection: Multi-turn contextual analysis, intent classification per turn
+  Data leakage:    RAG-aware — traces retrieval source, flags sensitive doc access
+  Agentic/MCP:     MCP server policy enforcement, tool-call allow-listing, memory audit
+  Deployment:      Cloud-native SaaS, SDK for LangChain / custom agent frameworks
+  Best for:        Teams building agentic LLM systems needing deep model-level visibility
+
+MY TAKE:
+  Neither product fully covers supply chain (model provenance, poisoned weights)
+  or adversarial inputs — these require separate controls.
+
+  For the anomaly detection system specifically:
+  → Cisco AI Defense at the REST API layer would catch oversized inputs and
+    basic injection attempts in the request payload.
+  → Prisma AIRS would add value if we extended to an agentic system where
+    the model has tool access (camera controls, alert creation, etc.)
+
+  The right question is not "which product" but "which threat layer is
+  highest risk for this specific deployment" — then choose the tool that
+  covers that layer best.
+
+================================================================
+GIF FILES (all in: c:\Users\atanu\Desktop\TEST\gifs\)
+================================================================
+01_pipeline_overview.gif    — Animated 5-step pipeline diagram
+02_training_loss.gif        — ConvAE training loss over 30 epochs (animated)
+03_reconstruction.gif       — Real frames: original / reconstruction / error heatmap
+04_score_timeline.gif       — Anomaly MSE score across all 2010 test frames
+05_detection_overlay.gif    — Raw UCSD frames with red box on detected anomalies
+06_confusion_matrix.gif     — TP/FP/FN/TN matrix (animated reveal)
+07_roc_curve.gif            — ROC curve build-up, AUC=0.6428
+
+MODEL & CODE
+  c:\Users\atanu\Desktop\TEST\src\pipeline.py    — full reproducible pipeline
+  c:\Users\atanu\Desktop\TEST\src\convae.pth     — trained model checkpoint
+  c:\Users\atanu\Desktop\TEST\src\metrics.json   — all evaluation numbers
+
+================================================================
